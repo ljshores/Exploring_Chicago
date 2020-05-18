@@ -1,0 +1,7 @@
+"0",""
+"0","#legend(""bottomleft"",  inset = .01, title = ""Income Deciles"",legend= sort(unique(cook.cnty.sub$bg_inc_deciles))"
+"0"," #      ,fill = pal, horiz=F)"
+"0","# I feel like the non ggplot version of this tells better info. Because with this, "
+"0","#seems like most of the county is in green. Just need to move the legend over in base plot"
+"0","ggplot(cook.cnty.sub) + geom_sf(aes(fill=cmnty_inc_deciles)) + ggtitle(""Community Areas by Colored by Income Deciles"") + scale_fill_brewer(palette = ""RdYlGn"")#+ theme(legend.title = element_text(""Income Deciles""))"
+"0",""

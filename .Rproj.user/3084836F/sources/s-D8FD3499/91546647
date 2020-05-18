@@ -1,0 +1,33 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1589686266240.000,
+    "dirty" : false,
+    "encoding" : "",
+    "folds" : "",
+    "hash" : "0",
+    "id" : "91546647",
+    "lastKnownWriteTime" : 0,
+    "last_content_update" : 1589686266240,
+    "path" : null,
+    "project_path" : null,
+    "properties" : {
+        "cacheKey" : "A1ED9F23",
+        "caption" : "cook.cnty",
+        "contentUrl" : "grid_resource/gridviewer.html?env=&obj=cook.cnty&cache_key=A1ED9F23",
+        "displayedObservations" : "2153",
+        "environment" : "",
+        "expression" : "cook.cnty",
+        "object" : "cook.cnty",
+        "preview" : "0",
+        "totalObservations" : "2153",
+        "variables" : "26"
+    },
+    "read_only" : false,
+    "read_only_alternatives" : [
+    ],
+    "relative_order" : 5,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_dataframe"
+}

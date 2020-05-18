@@ -1,0 +1,2 @@
+"0",""
+"0","#ggplot(cook.cnty) + geom_sf(aes(fill=""White_Perc""))"

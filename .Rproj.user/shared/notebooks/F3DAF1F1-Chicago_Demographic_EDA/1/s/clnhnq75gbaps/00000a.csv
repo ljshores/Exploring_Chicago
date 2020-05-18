@@ -1,0 +1,2 @@
+"0","cook.cnty$PopDensity <- cook.cnty$TotalPopulation / cook.cnty$ALAND"
+"0",""

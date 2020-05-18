@@ -1,0 +1,666 @@
+---
+title: "CTA Ridership City Insights"
+author: "Lauren Shores"
+date: "February 18, 2018"
+output: html_document
+---
+
+ 
+# Introduction
+
+For many Chicagoans, the CTA (the public transportation system) is an integral part of everyday life. Chicago is unique in that within the city limits there are very densely populated areas, where owning a car is not necessary, and there are areas where owning a car makes life a lot easier.
+
+This analysis is an attempt to gain some insights into who uses the CTA buses in the city and in what areas. In this project, I have collected data on population, race, education, and employment from nhgis at the census block group level. I have also pulled CTA data on average bus and L ridership from transitchicago.com for October 2012, and overlayed the gis coordinates to map this data to census block group level as well.
+
+A census block group is a hierarchical step higher than a census block (it is generally a cluster of a few census blocks within a census tract). 
+
+
+# Summary of Analysis
+This analysis shows that there are no strong connections between how many people ride the bus on average in a month in a particular census block group, and the demographics of that census block group. 
+
+What it does show us is some of the well-known ideas about demographic and census data that are in circulation, and it confirms ideas about Chicago, such as it being a segregated city where individuals tend to live around other individuals like themselves.
+
+It also shows that variables relating to transportation and geography are much more important in understanding what is happening in terms of bus ridership, such as how many busstops does the census block group have, and does it have an L stop nearby.
+
+ 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(rgdal)
+library(shapefiles)
+library(raster)
+library(gridExtra)
+library(PerformanceAnalytics) #fancy correlation plots
+library(corrplot)
+library(reshape2)
+library(caret)
+
+library(rpart) #decision tree
+library(randomForest)
+library(party)
+
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+
+library(xgboost)
+
+#install.packages("https://cran.r-project.org/bin/macosx/mavericks/contrib/3.3/viridis_0.4.1.tgz", repos=NULL)
+#install.packages("https://cran.r-project.org/bin/macosx/mavericks/contrib/3.3/RGtk2_2.20.31.tgz", repos=NULL)
+```
+
+## Bus Ridership
+
+Below are the features of the dataframe pulled together from CTA bus and L and government demographic data.
+```{r busdat}
+busroute = read.csv("CTA_-_Ridership_-_Bus_Routes_-_Daily_Totals_by_Route.csv", stringsAsFactors = FALSE) %>%
+  mutate(date = as.Date(date, format = "%m/%d/%Y"))
+
+boardings = read.csv("CTA_-_Ridership_-_Avg._Weekday_Bus_Stop_Boardings_in_October_2012.csv", stringsAsFactors = FALSE ) %>%
+    mutate(month_beginning = as.Date(month_beginning, format = "%m/%d/%Y"),
+           latitude = as.numeric(substr(location, 2, 12)),
+           longitude = as.numeric(substr(location, 14,26)))
+
+board = boardings %>% dplyr::select(-routes, -on_street,-cross_street,-daytype, -location)
+
+#head(busroute)
+#tail(boardings)
+```
+```{r chitracts} 
+#and community
+#try
+#Load census tract data
+#Note: The usage of `@` to access attribute data tables associated with spatial objects in R
+tract <- shapefile("Chi_Census_Blocks.shp")
+tract <- spTransform(x=tract, CRSobj=CRS("+proj=longlat +datum=WGS84"))
+names(tract@data) <- tolower(names(tract@data))
+
+board <- SpatialPointsDataFrame(coords=board[, c("longitude", "latitude")],
+          data=board[, c("month_beginning", "stop_id", "boardings", "alightings")],
+          proj4string=CRS("+proj=longlat +datum=WGS84"))
+##--------
+
+community <- shapefile("Chi_Community_Area.shp")
+community <- spTransform(x=community, CRSobj=CRS("+proj=longlat +datum=WGS84"))
+names(community@data) <- tolower(names(community@data))
+
+
+#Spatial overlay to identify census polygon in which each crime point falls
+#The Result `vc_tract` is a dataframe with the tract data for each point
+board_tract <- over(x=board, y=tract)
+
+#Add tract data to crimePoints
+board@data <- data.frame(board@data, board_tract)
+
+# make a data frame to play with, not a geo object
+board.df <- as.data.frame(board) %>%
+  mutate(tract_bloc_grp = substr(tract_bloc,1,7) )
+#------------
+#overlay the boardings data on the community area data
+board_comm <- over(board, y=community)
+
+board@data <- data.frame(board@data, board_comm)
+
+# make a data frame to play with, not a geo object
+board.df2 <- as.data.frame(board) %>%
+  mutate(tract_bloc_grp = substr(tract_bloc,1,7) ) %>%
+  dplyr::select(-area, -comarea, -comarea_id,-area_num_1,-perimeter)
+
+# can now take this data and join it with the demographic data pulled from ipums
+demo_dat <- read.csv("nhgis_CookCnty_2010_blck_grp.csv", stringsAsFactors = FALSE) %>% mutate(geoid = as.character(geoid),
+                                                                                              tract_bloc_grp = substr(geoid, 8, nchar(geoid)))
+
+
+
+#in dat, we have a dataframe where each row is a bus stop, it's ridership, and
+#demographics about the census block group that the bus stop is in Oct 2012
+dat <- board.df2 %>% left_join(., demo_dat, by="tract_bloc_grp") %>% na.omit(.)
+
+# at the census track group level. We don't have demog data at bus stop level, so best to roll up
+
+#******big change here is changing sum to max for summarize and the filter
+dat.ctg <- dat %>% group_by(tract_bloc_grp, community, area_numbe, shape_len, shape_area) %>% summarize(boardings = max(boardings), alightings = max(alightings), busstops = n()) %>% ungroup()
+
+demo.ctg <- dat[c(18,12,15,13,14,28:48)] %>% group_by(tract_bloc_grp, community, area_numbe, shape_len, shape_area) %>% summarize_all(funs(mean)) %>% ungroup()
+
+dat.ctg <- dat.ctg %>% left_join(demo.ctg, by= c("tract_bloc_grp", "community", "area_numbe", "shape_len", "shape_area")) %>%
+  mutate(white_perc = White_pop/Total_Population,
+         black_perc = Black_pop/Total_Population,
+         asian_perc = Asian_pop/Total_Population,
+         grade8_perc = Edu_8thGrade/EduTotal,
+         highschool_perc = Edu_HighSchoolOrGED/EduTotal,
+         bachelors_perc = Edu_BachelorDegree/EduTotal,
+         ftwork_perc = Worked_FT_past_year/Workers_Total,
+         nowork_perc = Did_Not_Work/Workers_Total,
+         log_boardings = log(boardings),
+         log_alightings = log(alightings)) %>% filter(boardings > 10, boardings < 1000, community != "LOOP")
+#now, what can I say about a census block group knowing this info?
+
+```
+
+
+
+
+```{r L}
+
+split.fun <- function(x){ strsplit(x, ",")}
+Lrides = read.csv("CTA_-_Ridership_-__L__Station_Entries_-_Daily_Totals.csv", stringsAsFactors = FALSE)
+
+Linfo = read.csv("CTA_-_System_Information_-_List_of__L__Stops.csv", stringsAsFactors = FALSE)
+
+L.df = Lrides %>% inner_join(Linfo, by=c("station_id" = "MAP_ID")) %>%
+  mutate(date = as.Date(date, format = "%m/%d/%Y")) %>%
+         #latitude = substr(lat, start= 2, stop = nchar(lat),
+         #longitude = substr(long), start = 1, stop = nchar(long - 1))) %>%
+         #as.numeric(substr(Location, 2, 9)),
+          # longitude = as.numeric(substr(Location, 13,22))) %>%
+  filter(date < '2012-11-01',
+         date >= '2012-10-01',
+         daytype == "W") #weekdays only, as our bus data is only weekdays
+
+#separate out and format latitude and longitude from the location variable and bind back into the original data frame
+z <- unlist(strsplit(L.df$Location, ","))
+lat=c(z[1])
+p=1
+for (i in 1:(length(z)/2-1)){
+  p=p+2
+  l1= z[p]
+  lat= append(lat,l1)
+}
+lat = as.numeric(substr(lat,2,nchar(lat)))
+
+long=c(z[2])
+b=2
+for (i in 1:(length(z)/2-1)){
+  b=b+2
+  l2= z[b]
+  long= append(long,l2)
+}
+long = as.numeric(substr(long,2,(nchar(long)-1)))
+
+L.df = cbind(L.df, data.frame(latitude = lat), data.frame(longitude = long))
+#due to direction, the data is duplicated. get rid of vars that are descriptive and make duplicates
+L.df[6] <- NULL
+L.df[6] <- NULL
+L.df[6] <- NULL
+
+L.df <- unique(L.df)
+
+L.grp <- L.df %>% group_by(station_id, stationname,latitude, longitude) %>%
+  summarize(L_rides = mean(rides))
+
+L <- SpatialPointsDataFrame(coords= L.grp[, c("longitude", "latitude")],
+          data= L.grp[, c("station_id", "stationname", "L_rides")],
+          proj4string=CRS("+proj=longlat +datum=WGS84"))
+
+#Spatial overlay to identify census polygon in which each crime point falls
+#The Result `vc_tract` is a dataframe with the tract data for each point
+train_tract <- over(x=L, y=tract)
+
+#Add tract data to crimePoints
+L@data <- data.frame(L@data, train_tract)
+
+# make a data frame to play with, not a geo object
+train.df <- as.data.frame(L) %>%
+  mutate(tract_bloc_grp = substr(tract_bloc,1,7) ) %>%
+  dplyr::select(station_id, stationname, tract_bloc_grp, L_rides) %>%
+  na.omit() #some of these stations aren't in Chicago proper, so they don't fit in the chicago census overlay
+```
+
+```{r busL}
+
+#Combine bus and L data
+
+full.df <- dat.ctg %>% left_join(train.df, by = "tract_bloc_grp") %>%
+  mutate(L_indicator = as.factor(ifelse(is.na(stationname ), "N", "Y"))) %>%
+  dplyr::select(-station_id,-stationname)
+
+full.df[is.na(full.df)] <- 0
+
+
+names(full.df)
+```
+
+Let's see how some of these variables relate to each other using correlations.
+
+```{r explore, message = FALSE, warning=FALSE}
+
+#sample of representative numeric variables
+rep.samp <- c("boardings","busstops","Total_Population","White_pop","Black_pop", "Asian_pop", "Edu_HighSchoolOrGED","Edu_BachelorDegree", "Edu_DoctorateDegree", "Median_HH_Income", "Worked_past_year","Did_Not_Work")
+
+small.rep.samp <- c("boardings","busstops","Total_Population", "Edu_BachelorDegree", "Edu_DoctorateDegree", "Median_HH_Income", "Worked_past_year", "black_perc","white_perc")
+
+#sample vars with categorical variables -- good for models
+sub.vars <- c("tract_bloc_grp","community","boardings","shape_area","busstops","Total_Population","White_pop","Black_pop", "Asian_pop", "Edu_HighSchoolOrGED","Edu_BachelorDegree", "Edu_DoctorateDegree", "Median_HH_Income", "Worked_past_year","Did_Not_Work", "black_perc","white_perc")
+# Create a correlogram from variables covering each category
+sub <- full.df[rep.samp]
+
+par(mar=c(3,2,2,1))
+corrplot(cor(sub), type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+
+#more in depth matrix correlation plot
+sub2 <- full.df[small.rep.samp]
+
+chart.Correlation(sub2, histogram=TRUE, pch=19)
+```
+
+From the above, we see confirmed in the data some common ideas about demographics in urban areas. 
+
+ * The relationship between higher proportion of black residents in a census block group is negatively correlated with median household income, full time employment, and higher levels of education.
+ * The inverse relationship is true of census block groups with higher proportions of white residents.
+ * Chicago is highly segregated, as census block groups generally have either a low proportion of black residents or a high proportion of black residents, but not many in between, as evidenced by the histogram.
+ * Higher education is positively related to higher median household incomes and higher numbers of full time employment
+ 
+As for other quick insights:
+
+ * The number of busstops in an area is positively related to the number of boardings. It's the strongest feature related to boardings
+ * I expected to see total population of an area more strongly correlated with bus boardings, but this is not the case.
+
+
+
+Below, we take a closer look at the histograms from the above plots to see the distributions. We see that most census block groups (cbg's) have boardings in a similar range, but there are some outliers. And these outliers may be due to cbg's being outliers in terms of number of busstops and total population.
+
+My hunch tells me that these may be cbg's downtown, which have tall buildings so may have more people per cbg and may have many more busstops to cover all the traffic of that area.
+```{r histograms}
+
+#plot every column in a dataframe as a  histogram
+d <- melt(sub2)
+ggplot(d,aes(x = value, fill=I('pink'), color=I('black'))) + 
+    facet_wrap(~variable,scales = "free_x") + 
+    geom_histogram()
+```
+
+How many or what proportion of cbg's fall outside of the most common range for number of bus boardings?
+ 
+ * 75% of the Census Block Groups have average boardings less than 590
+ * 20% of the Census Block Groups have average boardings between 590 and 1835
+
+```{r propbdings, eval=FALSE}
+
+summary(full.df$boardings)#590
+
+third.qt <- full.df[full.df$boardings <= 590,]
+fourth.qt <- full.df[full.df$boardings > 590 & full.df$boardings<= 1835,]
+fourth.qt2 <- full.df[full.df$boardings > 1835,]
+
+ppp1 <- ggplot(third.qt, aes(boardings, color=I('black'))) + geom_histogram(binwidth=5) + ggtitle("Distribution of cbg Boardings in First 3 Quartiles")
+
+ppp2 <- ggplot(fourth.qt, aes(boardings, color=I('black'))) + geom_histogram(binwidth=10) + ggtitle("Distribution of cbg Boardings in 4th Quartile")
+
+ppp3 <- ggplot(fourth.qt2, aes(boardings, color=I('black'))) + geom_histogram(binwidth=100) + ggtitle("Distribution of cbg Boardings - Cut of 4th Quartile")
+
+grid.arrange(ppp1, ppp2, ppp3)
+
+# make a category that specifies these boarding quartile cuts.
+# Can then start making demograph comparisons for cbg's with similar boarding trend ranges
+
+```
+
+
+While the magnitude of the range varies greatly depending on the quartile, it's not clear how to slice number of boardings into meaningful groups. Perhaps adding a geographical dimension to the data would be helpful, in that we could see by neighborhood, or even area of the city how boardings vary.
+
+
+Below is a correlation plot of just the first three quartiles of data for boardinsgs.
+```{r explore_grps}
+full.df2 <- full.df %>%
+  mutate(boarding_grps = factor(ifelse(boardings <= 590, "Top3rd_Qrt", ifelse(boardings > 590 & boardings <= 1835, "Bottom4th_Qrt", "Top4th_Qrt")), levels = c("Top3rd_Qrt", "Bottom4th_Qrt", "Top4th_Qrt"))) %>% 
+  dplyr::select(-log_boardings, -log_alightings)
+# Create a correlogram from variables covering each category
+
+ns2.df <- full.df2[full.df2$boarding_grps == "Top3rd_Qrt",small.rep.samp] 
+
+par(mar=c(3,2,2,1))
+corrplot(cor(ns2.df), type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```
+
+From the scatterplot matrix below, we see that for the majority of Census Block Groups, the number of boardings have very little correlation or directional relation to the other variables.
+
+```{r scatchart}
+#more in depth matrix correlation plot
+sub4 <- full.df2[full.df2$boarding_grps == "Top3rd_Qrt",rep.samp] 
+
+chart.Correlation(sub4, histogram=TRUE, pch=19, main = "Matrix for CBGs with Boardings in First 3 Quartiles")
+
+```
+
+
+For those cbg's that have the highest number of boardings, there still aren't any super clear trends. But these cbg's do tend to have lower proportion of black residents and higher proportion of white residents.
+
+
+```{r explore_grpsSmall,eval=FALSE}
+
+
+sub4 <- full.df2[full.df2$boarding_grps == "Top4th_Qrt",small.rep.samp] %>%  filter(boardings < 10000) #get rid of extreme outliers
+
+chart.Correlation(sub4, histogram=TRUE, pch=19, main = "Matrix for CBGs with Boardings in Top of 4th Quartile")
+
+```
+
+I quickly attempted to cluster the data and make profiles of the clusters that could tie cbg characteristics to boardings  trends. But the groups never yielded distinct cutoffs for boardings, making it impossible to create profiles that would speak to the tendencies of this variable.
+
+The same thing resulted in from breaking the cbg's into groups based on what quartile the boardings fell into -- the other variables did not yield distinct groups.
+
+
+## Try to Get Rid of Noise from Low Ridership Stops in a CBG
+
+
+ultimately the cbg level may be too granular to try to tie transportation habits to demographics. Perhaps community level is a better way to go.
+```{r noise}
+
+#b <- dat %>% group_by(tract_bloc_grp) %>% summarize(cnt_stops = n())
+
+#View(b)
+
+ggplot(full.df, aes(L_indicator, boardings)) + geom_point() + ylim(c(0,600))
+```
+
+
+
+
+
+
+# Community Areas
+
+Here we take a look at what's happening at a less granular level -- the Community area level.
+
+
+```{r community}
+community.df <- full.df2 %>% group_by(community, L_indicator) %>%
+  summarize_all(funs(mean)) %>% ungroup() %>%
+  mutate(community = factor(community))
+
+```
+
+```{r corr_comm}
+comm_sub <- community.df[community.df$boardings < 1000,rep.samp] 
+
+chart.Correlation(comm_sub, histogram=TRUE, pch=19, main = "Community")
+```
+
+As suspected, the Loop is the area which has the extremely high number of boardings for its census block groups.
+
+```{r cmty_box}
+
+ggplot(full.df2, aes(community, boardings, group=community)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 3))
+```
+
+Here we take out the Loop to get a better view of what's happening in the other areas.
+
+```{r cmty_box2}
+
+ggplot(full.df2[full.df2$community != "LOOP",], aes(community, boardings, group=community)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 4)) +ylim(c(0,4000))
+```
+
+
+Below is a map of Chicago Community areas shaded by number of boardings. The lighter the color, the higher the number of boardings for that area.
+We see that areas closer to the city center, such as the loop and surrounding areas have higher number of bus boardings.
+
+
+```{r map}
+#plot(board_comm)
+
+#Add tract data to crimePoints
+board@data <- data.frame(board@data, board_comm)
+
+#Aggregate homicides by tract (assuming the column "census_tra" is the unique ID for census tracts)
+hom_tract <- aggregate(formula=boardings~community, data=board@data, FUN=sum)
+
+#Add number of homicides to tracts object
+m <- match(x=community@data$community, table=hom_tract$community)
+community@data$boardings <- hom_tract$boardings[m]
+
+
+
+par(mar=c(.5,1,.5,1))
+plot(community,col=gray(community@data$boardings/max(community@data$boardings)), main= "Boardings by Community Area")
+#legend("topleft", legend= unique(community@data$community), fill=gray(community@data$boardings/max(community@data$boardings)))
+
+```
+
+
+
+# Modeling
+
+I'm interested in seeing if we can come up with some solid predictions of how many bus boardings a cbg will have on average, based on the features that we have available.
+
+## Linear Regression
+
+Linear regression is a good baseline modeling method. It's often a good place to start when trying to figure out the relationship of the features to the target variable. 
+
+For the linear model, I scaled the variables, since the ranges and measures are so different.
+
+```{r prepping_dat, message=FALSE, echo=FALSE}
+#scale the data
+
+del.vars <- c("tract_bloc_grp", "area_numbe", "shape_len","alightings")
+
+# Data frame that is ready for modelling. transformed versions of variables have been removed and conflict variables like alightings have been removed.
+not.scaled <- full.df2 %>% 
+  dplyr::select(-tract_bloc_grp,-area_numbe, -shape_len, -alightings, -L_rides, -boarding_grps, -busstops) %>%
+  mutate(community = factor(community))
+not.scaled[is.na(not.scaled)] <- 0
+
+# Scaled Data
+#df.scaled = cbind(full.df[c(1,26:35,37)], scale(full.df[c(2:25,36)])) 
+#df.scaled[is.na(df.scaled)] <- 0
+
+#final.df <- df.scaled[c(13,12,15:37)] # df that is ready for modeling; 
+
+#not.scaled <- not.scaled[c(13,12,15:37)]
+
+
+# Training & Test Sets
+inTrain <- createDataPartition(not.scaled$boardings, p=.75, list =FALSE)
+
+# Not Scaled Sets
+training.ns <- not.scaled[ inTrain,] 
+testing.ns <- not.scaled[-inTrain,]
+testing.ns$community <- factor(testing.ns$community, levels = levels(training.ns$community))
+
+# Scaled Sets
+#training.s <- final.df[ inTrain,] 
+#testing.s <- final.df[-inTrain,] 
+
+# an accuracy measure
+mape.fun <- function(ACTUALS, PREDICTION){ 100 *(abs(ACTUALS - PREDICTION)/ACTUALS)}
+
+```
+
+I used stepwise regression to select features for the model.
+The model itself has a high p-value, which indicates that it is not statistically significant.
+
+```{r regression, message=FALSE}
+
+
+# do a stepwise regression to see what the important variables are;
+
+f= (boardings ~ . )
+
+lm.fit <- step(lm(f, data= training.ns), trace = 0)
+
+#lm.fit <- lm(boardings ~ community, data = training.ns)
+summary(lm.fit)
+
+#plot(lm.fit)
+
+```
+
+The linear model yielded dismally poor predictions on the test set of data, where only 3% of instances had error within 5%
+
+```{r lm.pred}
+pred.lm <- predict(lm.fit, newdata=testing.ns)
+
+
+lm.pred.check <- cbind(actuals = testing.ns$boardings, data.frame(predictions = pred.lm)) %>%
+  mutate(diff = round(actuals - predictions, digits=2),
+         mape = round(abs(diff)/actuals, digits=2),
+         mape_buckets = factor(ifelse(mape >= 0 & mape <= .05,"Low_Error_5%",ifelse(mape > .05 & mape <= .10, "Between05_&_10%", ifelse(mape > .10 & mape <= .15, "Between10_&_15%", "GreaterThan15%" ))), levels=c("Low_Error_5%", "Between05_&_10%", "Between10_&_15%", "GreaterThan15%")) )
+
+prop.table(table(lm.pred.check$mape_buckets))
+
+```
+
+
+## Regression Tree
+
+Below, we grow a regression tree. We see that community area and the indicator specifiy if there is an L stop in that cbg are the most important features for growing this tree.
+
+```{r tree}
+f= (boardings ~ . )
+
+tree.fit <- rpart(f, data =training.ns,control = rpart.control(xval =10, minsplit = nrow(training.ns)*.02) )
+
+rpart.plot(tree.fit)
+
+
+
+```
+
+But the prediction results are also very poor.
+
+```{r tree.pred}
+
+pred.tree <- predict(tree.fit, newdata=testing.ns)
+
+
+tree.pred.check <- cbind(actuals = testing.ns$boardings, data.frame(predictions = pred.tree)) %>%
+  mutate(diff = round(actuals - predictions, digits=2),
+         mape = round(abs(diff)/actuals, digits=2),
+         mape_buckets = factor(ifelse(mape >= 0 & mape <= .05,"Low_Error_5%",ifelse(mape > .05 & mape <= .10, "Between05_&_10%", ifelse(mape > .10 & mape <= .15, "Between10_&_15%", "GreaterThan15%" ))), levels=c("Low_Error_5%", "Between05_&_10%", "Between10_&_15%", "GreaterThan15%")) )
+
+prop.table(table(tree.pred.check$mape_buckets))
+
+```
+
+## Random Forest
+
+Here we use random forest to grow many trees to give insights about the data. Note that the community area variable was removed as a predictor since random forest cannot handle categorical predictors with more than 53 levels.
+
+It explains a good proportion of variation and indicates higher education, work status, and population for a cbg amongst the most important variables for growing the forest.
+
+```{r randfst, message = FALSE}
+
+#random forest cannot handle cat predictors with more than 53 levels
+training.rf <- training.ns %>% dplyr::select(-community)
+testing.rf <- testing.ns %>% dplyr::select(-community)
+
+#mtry specifies the number of random features to use in each split
+mtry <- tuneRF(training.ns[-1], training.ns$boardings, ntreeTry = 500, stepFactor = 1.5, improve =0.01, trace = FALSE)
+
+mtry <- data.frame(unlist(mtry))
+best.m = mtry[mtry$OOBError == min(mtry$OOBError), 1]
+
+#print(mtry)
+
+#Random forest model
+forest.fit <- randomForest(f, data =training.rf, ntree=500, mtry= best.m)
+
+#can use getTree to see the tree splits
+print(forest.fit)
+
+#rf.imp <- varImp(forest.fit)
+
+varImpPlot(forest.fit)
+
+#Predictions
+rf.preds = predict(forest.fit, testing.rf)
+
+rf.pred.check <- cbind(actuals = testing.rf$boardings, data.frame(predictions = rf.preds)) %>%
+  mutate(diff = round(actuals - predictions, digits=2),
+         mape = round(abs(diff)/actuals, digits=2),
+         mape_buckets = factor(ifelse(mape >= 0 & mape <= .05,"Low_Error_5%",ifelse(mape > .05 & mape <= .10, "Between05_&_10%", ifelse(mape > .10 & mape <= .15, "Between10_&_15%", "GreaterThan15%" ))), levels=c("Low_Error_5%", "Between05_&_10%", "Between10_&_15%", "GreaterThan15%")) )
+
+prop.table(table(rf.pred.check$mape_buckets))
+
+```
+
+Unfortunately, the predictions are very poor here as well.
+
+
+
+
+
+## Gradient Boosted Trees
+
+Because CART is a greedy method, it chooses the most optimal variable to first split on, but this may not lead to the most optimal solution. Here I will use boosted trees, to get an ensemble of trees that are grown sequentially and in such a way as to correct for the error of the previous tree. Thus we won't have to worry about the bias from just the one tree, or from just getting stuck with pulling from the same variables, and also will learn from our error.
+
+
+We see that Total_Population is the most important variable used in this boosted tree exercise. 
+
+We also see that it performs pretty well, predicting more than 80% of the cbg's within 5% of error.
+
+```{r boosttree, message = FALSE}
+
+bst <- xgboost(data = data.matrix(training.ns), label=training.ns$boardings, max.depth = 15, eta = 1, nthread = 2, nround = 10, objective = "reg:linear",verbose = 0)
+
+
+#xgb.plot.multi.trees(model = bst, feature_names = colnames(new_tr), features_keep = 3)
+
+pred.xgb <- predict(bst, data.matrix(testing.ns))
+
+xgb.pred.check <- cbind(actuals = testing.ns$boardings, data.frame(predictions = pred.xgb)) %>%
+  mutate(diff = round(actuals - predictions, digits=2),
+         mape = round(abs(diff)/actuals, digits=2),
+         mape_buckets = factor(ifelse(mape >= 0 & mape <= .05,"Low_Error_5%",ifelse(mape > .05 & mape <= .10, "Between05_&_10%", ifelse(mape > .10 & mape <= .15, "Between10_&_15%", "GreaterThan15%" ))), levels=c("Low_Error_5%", "Between05_&_10%", "Between10_&_15%", "GreaterThan15%")) )
+
+
+#view variable importance plot
+new_tr <- training.ns[,-c(1)]
+
+mat <- xgb.importance (feature_names = colnames(new_tr),model = bst)
+xgb.plot.importance(importance_matrix = mat)
+
+#xgb.plot.deepness(model = bst)
+
+
+
+prop.table(table(xgb.pred.check$mape_buckets))
+
+
+
+#upper plot is number of leaves per level of deepness
+#lower plot is weighted sum of instances (leaves)
+#this shows that there's something bimodal happening, where at two depths 6 and 16 there are high number of leaves. not sure if keeping leaf depth high leads to overfitting.
+
+# could set a few different seeds to split data and see if accuracies are in same ballpark
+
+ggplot(xgb.pred.check, aes(mape, color=I('black'), fill=('pink'))) + geom_histogram(binwidth=.05) + xlim(c(-1,1)) + ggtitle("XGBoost Error Distribution")
+
+## Finish off with maps
+#If can do an area level map that shows averag boardings
+#One that shows total pop
+#shows perc of black and perc of white
+#One that shows avg hh income
+#one that shows avg master degrees
+```
+
+
+## Thoughts from Modelling
+
+Information collected by the census such as race, education, income, and employment simply are not good indicators of bus ridership for an area. Regardless of the model used or the strength of the model, we see that the variables that are chosen as important to predicting ridership have to do with transportation (L indicator, or number of bus stops) or geography (such as community area).
+
+There may be demographic reasons why an area may have more bus stops or elements that make up a community area that could be investigated in the future, but these are less direct indicators.
+
+When I remove these features, Education and Employment seem to fall into line as the next most important variables. And this is consistent with these variables being chosen for the biggest information gains in the decision tree splits.
+
+It is testament to the power of the gradient boosted tree algorithm that it is able to perform pretty well with data that does not offer up clear relationships to the target variable.
+
+
+
+
+
+## Resources
+
+http://www.transitchicago.com/data/
+
+https://datahub.cmap.illinois.gov/dataset/2010-census-data-summarized-to-chicago-community-areas
+
+https://data.cityofchicago.org/Facilities-Geographic-Boundaries/Boundaries-Census-Blocks-2010/mfzt-js4n/data
+
+https://data2.nhgis.org/main

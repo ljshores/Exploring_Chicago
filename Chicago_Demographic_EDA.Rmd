@@ -1,0 +1,616 @@
+---
+title: "Exploring_Chicago_Pt1"
+author: "Lauren Shores"
+date: "5/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE)
+#, message=FALSE
+```
+
+```{r packages}
+#library(sf)
+library(ggplot2)
+library(gridExtra)
+library(magrittr)
+library(dplyr)
+library(caret)
+library(sf)
+#library(rgdal)
+#library(shapefiles)
+#library(raster)
+```
+## Intro
+
+The purpose of this analysis is to explore the distribution of different metrics across the city at the census block group level. These metrics include:
+
+*median household income
+*population density
+*race
+*crime
+*access to businesses
+*access to public transportation
+
+## Getting Started
+
+First we need to read in the data. It's going to be helpful to think about Chicago in terms of neighborhoods, so will bring in a community areas shapefile. 
+
+We also have our first few metrics in a dataset that was pulled from NHGHIS, so we'll bring that in as well.
+This data is for all counties in IL, so we will just focus on Cook County.
+
+
+
+```{r files}
+comm_boundary <- st_read("/Users/laurenshores/Documents/Data_Science_Projects/Exploring_Chicago_Neighborhoods/Data/Boundaries_Community_Areas/geo_export_782a78c7-402d-4a93-bb37-c4ab05c3b15b.shp")
+
+
+
+# shapefile for all counties in the us (has shapes at blockgroup level)
+# source:  https://www.census.gov/cgi-bin/geo/shapefiles/index.php
+# Can filter on the state and county code to just get cook county il
+# found out the codes here https://www.nrcs.usda.gov/wps/portal/nrcs/detail/national/home/?cid=nrcs143_013697
+bg_boundary <- st_read('Data/tigerLine_2019_IL_bg/tl_2019_17_bg.shp') %>% filter(COUNTYFP == '031',
+                                                                                      STATEFP == '17') %>%
+  #This shapefile contains a bunch of water in lake michigan that makes the plot awkward. 
+  # filter out the block group that has the largest water area
+  # which happens to be block group 0
+  filter(AWATER != max(AWATER))
+
+
+# census driven demographic data
+bg_demograph <- read.csv("Data/nhgis0006_csv/nhgis0006_ds233_20175_2017_blck_grp.csv") %>% 
+  filter(COUNTY == "Cook County") %>% 
+  select(COUNTY, TRACTA, BLKGRPA, AHY1E001, AHY2E001, AHY2E002, AHY2E003, AHY2E005, AHY2E004,AHY2E007,AH04E001,AH04E022,AH04E023, AH04E024,AH04E025, AH1PE001,AH3PE001,AH3PE003,AH3PE004, AH3PE005)
+
+names(bg_demograph) <- c("COUNTY", "CensusTractCode", "BlockGrpCode", "TotalPopulation", "Race_Total", "Race_White", "Race_Black", "Race_Asian", "Race_AmIndian", "Race_SomeOtherAlone","Edu_Total","Edu_Bachelors", "Edu_Masters", "Edu_ProfDegree","Edu_Doctorate", "Median_HHIncome", "Employment_Total","Employment_InLaborForce","Employment_Employed","Employment_Unemployed")
+
+
+```
+
+
+Check out the plots
+```{r bgplot}
+
+plot(st_geometry(bg_boundary))
+```
+
+
+```{r commmap}
+
+comm_points <- st_centroid(comm_boundary2)
+comm_points <- cbind(comm_boundary2, st_coordinates(st_centroid(comm_boundary2$geometry)))
+
+ggplot(comm_boundary2) + 
+  geom_sf(aes(fill=community)) + theme(legend.position = "none") +
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "darkblue", check_overlap = F, size=1.5) + ggtitle("Chicago Community Areas") + xlab("") + ylab("")
+```
+
+```{r commplot}
+ggplot() + 
+  geom_sf(data = comm_boundary, size = 3, color = "black", fill = "cyan1") + 
+  ggtitle("Chicago Community Areas") + 
+  coord_sf()
+```
+
+Check the demographic data for missing values, etc.
+There are 159 block groups that do not have income information. This is going to be important information in grouping our block groups. Let's try to impute the income values by building a regression model
+```{r demo}
+print(nrow(bg_demograph[is.na(bg_demograph$Median_HHIncome),]))
+print(nrow(bg_demograph[is.na(bg_demograph$Race_White),]))
+print(nrow(bg_demograph[is.na(bg_demograph$Race_Black),]))
+print(nrow(bg_demograph[is.na(bg_demograph$TotalPopulation),]))
+print(nrow(bg_demograph[is.na(bg_demograph$Employment_Employed),]))
+
+```
+
+## Imputing Missing HHIncome
+
+
+
+```{r model_fun}
+# Create a function to assess our models
+
+#create a function to determin avg mape
+mape_fun <- function(y_actual, y_pred){
+  return(mean(abs(y_actual - y_pred) / y_actual))
+}
+
+mod_assessment.fun <- function(training, testing, training_y, testing_y, lmfit, pred){
+  
+    
+  SSE = sum((testing_y -pred)^2)    # sum of squared errors
+  SST = sum((testing_y - mean(training_y))^2) # total sum of squares
+  
+  R_square = 1 - SSE/SST
+  message('R_squared on the test data:')
+  print(round(R_square, 2))
+  
+  RMSE = sqrt(SSE/length(pred))
+  
+  message("Root mean square error on the test data: ")
+  print(round(RMSE, 2))
+  
+  
+  message("Mean Absolute Percent Error on the test data (MAPE):")
+  print(mean(abs(testing_y - pred) / testing_y))
+  
+  #----------
+  # Preparing data for ploting
+  my_data = as.data.frame(cbind(predicted = pred,
+                              observed = testing_y))
+  
+  # Plot predictions vs test data
+  print(ggplot(my_data,aes(predicted, observed)) +
+        geom_point(color = "darkred", alpha = 0.5) + 
+        geom_smooth(method=lm)+ ggtitle('Linear Regression ') +
+        ggtitle("Linear Regression: Prediction vs Test Data") +
+        xlab("Predicted Median Household Income ") +
+        ylab("Observed Median Household Income") +
+        theme(plot.title = element_text(color="darkgreen",size=18,hjust = 0.5),
+                       axis.text.y = element_text(size=12),
+            
+              axis.text.x = element_text(size=12,hjust=.5),
+                        axis.title.x = element_text(size=14),
+                        axis.title.y = element_text(size=14)) )
+  
+  # Create a residuals plot
+  
+  y_train_pred = predict(lmfit, training[,names(training) != "Median_HHIncome"])
+  
+  print(ggplot() + geom_point(aes(y_train_pred, y_train_pred - training_y), colour = I('blue')) +
+    geom_point(aes(pred, pred - testing_y), colour = I('lightgreen')) + xlab("Predicted Values") + 
+    ylab("Residuals") +
+    ggtitle('Predicted Values vs. Residuals - Training & Test Data') )
+
+
+}
+
+```
+
+
+Will first try a regression with most of the variables to get HH Income values for the missing block groups.
+In certain categories, will just keep one variable because they're highly correlated (ex:high employed, low unemployed, etc)
+
+```{r modelingtry1, echo=FALSE}
+
+set.seed(123)
+#values eligble to be in traing set...those that have an income and variable we want to use in the model
+train <- bg_demograph[! is.na(bg_demograph$Median_HHIncome), ] %>% 
+  select(Race_Total, Race_White, Edu_Total, Edu_Bachelors, Employment_InLaborForce, Employment_Employed, Median_HHIncome)
+
+inTrain <- createDataPartition(y = train$Median_HHIncome, 
+                               p = 0.8, list = FALSE)
+
+# subset power_plant data to training
+training <- train[inTrain,]
+
+# subset the rest to test 
+testing <- train[-inTrain,]
+
+my.lm1 <- train(training[,1:6], training[,7],
+               method = "lm",
+               preProc = c("center", "scale")
+              )
+
+#Predict on the test set
+
+pred <- predict(my.lm1, testing[, 1:6])
+
+
+mod_assessment.fun(training, testing, training$Median_HHIncome, testing$Median_HHIncome, my.lm1, pred)
+
+
+```
+
+
+With a mape of .39, the above result isn't great. Let's try to make more succinct features by creating percentages for the demographics rather than absolute values, and then use that in the model
+
+```{r feature_creation}
+census_dat <- bg_demograph %>% select(Median_HHIncome, CensusTractCode, BlockGrpCode, TotalPopulation)
+
+census_dat$White_Perc = with(bg_demograph, Race_White / Race_Total)
+census_dat$Black_Perc = with(bg_demograph, Race_Black / Race_Total)
+census_dat$Asian_Perc = with(bg_demograph, Race_Asian / Race_Total)
+census_dat$OtherRace_Perc = with(bg_demograph, Race_SomeOtherAlone / Race_Total)
+
+census_dat$Bachelors_Perc =  with(bg_demograph, Edu_Bachelors / Edu_Total)
+census_dat$Masters_Perc =  with(bg_demograph, Edu_Masters / Edu_Total)
+census_dat$ProfDegree_Perc =  with(bg_demograph, Edu_ProfDegree / Edu_Total)
+census_dat$Doctorate_Perc =  with(bg_demograph, Edu_Doctorate / Edu_Total)
+
+census_dat$InLaborForce_Perc =  with(bg_demograph, Employment_InLaborForce / Employment_Total)
+census_dat$Employed_Perc =  with(bg_demograph, Employment_Employed / Employment_InLaborForce)
+census_dat$Unemployed_Perc =  with(bg_demograph, Employment_Unemployed / Employment_InLaborForce)
+
+census_dat$Median_HHIncome_Perc = with(bg_demograph, Median_HHIncome/ max(Median_HHIncome, na.rm=T) )
+census_dat$TotalPop_Perc = with(bg_demograph, TotalPopulation / max(TotalPopulation, na.rm=T) )
+
+```
+
+Below we see that using the percent variables had a marked improvement on Rsquare and error (R-square improved by .16 and mape went down by .06).
+```{r modelingtry2, echo=FALSE}
+
+set.seed(123)
+#values eligble to be in traing set...those that have an income and variable we want to use in the model
+train <- census_dat[! is.na(census_dat$Median_HHIncome), ] %>% 
+  select(Median_HHIncome, White_Perc, Black_Perc, Bachelors_Perc, Masters_Perc, InLaborForce_Perc, Employed_Perc, TotalPop_Perc)
+
+inTrain <- createDataPartition(y = train$Median_HHIncome, 
+                               p = 0.8, list = FALSE)
+
+# subset power_plant data to training
+training <- train[inTrain,]
+
+# subset the rest to test 
+testing <- train[-inTrain,]
+
+my.lm2 <- train(training[,2:8], training[,1],
+               method = "lm",
+               preProc = c("center", "scale")
+              )
+
+#create a function to determin avg mape
+mape_fun <- function(y_actual, y_pred){
+  return(mean(abs(y_actual - y_pred) / y_actual))
+}
+
+#Predict on the test set
+
+pred <- predict(my.lm2, testing[, 2:8])
+
+mod_assessment.fun(training, testing, training$Median_HHIncome, testing$Median_HHIncome, my.lm2, pred)
+
+
+```
+
+
+But our residuals plot does have a bit of a funnel shape, which indicates that a log or square transformation of the y variable may be appropriate.
+A log transform of y brings the R-square up to .59 and the mape down to .025!
+Also, no more funnel shape in the residuals plot (we now have equal variances/homoskedasticity)
+
+```{r modelingtry3}
+
+set.seed(123)
+#values eligble to be in traing set...those that have an income and variable we want to use in the model
+train <- census_dat[! is.na(census_dat$Median_HHIncome), ] %>% 
+  select(Median_HHIncome, White_Perc, Black_Perc, Bachelors_Perc, Masters_Perc, InLaborForce_Perc, Employed_Perc, TotalPop_Perc)
+
+inTrain <- createDataPartition(y = train$Median_HHIncome, 
+                               p = 0.8, list = FALSE)
+
+# subset power_plant data to training
+training <- train[inTrain,]
+
+# subset the rest to test 
+testing <- train[-inTrain,]
+
+my.lm3 <- train(training[,2:8], log(training[,1]),
+               method = "lm",
+               preProc = c("center", "scale")
+              )
+
+#Predict on the test set
+
+pred <- predict(my.lm3, testing[, 2:8])
+
+
+mod_assessment.fun(training, testing, log(training$Median_HHIncome), log(testing$Median_HHIncome), my.lm3, pred)
+
+
+
+```
+
+
+Now let's predict our missing income values, and join these new values to the original data frame.
+
+```{r imputepred}
+impute_set <- census_dat[is.na(census_dat$Median_HHIncome), ] %>% 
+  select(White_Perc, Black_Perc, Bachelors_Perc, Masters_Perc, InLaborForce_Perc, Employed_Perc, TotalPop_Perc)
+
+# make predictions using latest model and don't forget need to use exponent to convert from logarithmic scale
+pred_impute <- exp(predict(my.lm3, impute_set))
+
+#did every blkgrp get a prediction
+message("count of blockgrps that did not get a prediction:") 
+length(pred_impute[is.na(pred_impute)])#, " out of ", as.character(nrow(impute_set)))
+
+```
+
+
+```{r rejoindata}
+
+#get the imputed values into the original df
+
+imputed_df = cbind(Median_HHIncome = pred_impute, census_dat[is.na(census_dat$Median_HHIncome), names(census_dat) != "Median_HHIncome" ]) 
+
+#append the imputed data with the census data that already had income values
+
+census_dat2 = rbind(census_dat[! is.na(census_dat$Median_HHIncome), ],
+      imputed_df)
+
+tail(census_dat2)
+```
+
+NOW THAT WE HAVE MORE Complete DATA, WE CAN GO ABOUT: 
+* MERGING THE GEO DATA WITH THE CENSUS DATA
+* VISUALIZING OUR MAIN VARIABLES ON A MAP 
+* GETTING POPULATION DENSITY WHEN WE DO THAT.
+* DRAW SOME OBSERVATIONS ABOUT THIS DATA. 
+
+```{r mapjoins}
+
+#I think the coordinate reference systems (CRS) on these are different, which is why the won't join
+#check crs
+st_crs(bg_boundary)
+st_crs(comm_boundary)
+
+#reproject crs
+#https://cengel.github.io/R-spatial/spatialops.html#reprojecting
+comm_boundary2 <- st_transform(comm_boundary, st_crs(bg_boundary))
+
+# find centroids of the different municipalities
+centroids  <- st_centroid(bg_boundary)
+
+# find out to which region they belong
+inters <- sf::st_intersection(comm_boundary2, centroids) %>% 
+  sf::st_set_geometry(NULL)
+
+# re-join with the blockgrps 
+cook_sf <- bg_boundary %>% right_join(inters) %>% 
+  sf::st_sf(sf_column_name = "geometry")
+head(cook_sf)  
+
+plot(cook_sf["community"])
+```
+
+
+
+```{r demojoin}
+
+# format these variables same as census data so will merge properly
+cook_sf$TRACTCE <- as.numeric(as.character(cook_sf$TRACTCE))
+cook_sf$BLKGRPCE <- as.numeric(as.character(cook_sf$BLKGRPCE))
+
+cook.cnty <- merge( cook_sf, census_dat2, by.x=c('TRACTCE', 'BLKGRPCE'), by.y=c('CensusTractCode','BlockGrpCode'),all.x=T) %>% select(-STATEFP, -COUNTYFP,-NAMELSAD, -MTFCC,-FUNCSTAT,-area, -area_num_1, -area_numbe, -comarea, -comarea_id, -perimeter)
+
+View(cook.cnty)
+
+```
+
+
+```{r eda}
+plot(cook.cnty["White_Perc"])
+plot(cook.cnty["Black_Perc"])
+plot(cook.cnty["Median_HHIncome"])
+plot(cook.cnty[c("White_Perc", "Black_Perc", "Asian_Perc")])
+cook.cnty$PopDensity <- cook.cnty$TotalPopulation / cook.cnty$ALAND
+
+```
+
+```{r betterplots}
+
+library(classInt)
+
+breaks_qt <- classIntervals(c(min(cook.cnty$Median_HHIncome) - .00001,
+                              cook.cnty$Median_HHIncome), n = 7, style = "quantile")
+
+cook.cnty <- cook.cnty %>% mutate( MedianHHIncome_cat = cut(Median_HHIncome, breaks_qt$brks)) 
+
+ggplot(cook.cnty) + 
+    geom_sf(aes(fill=MedianHHIncome_cat)) +
+    scale_fill_brewer(palette = "OrRd") 
+
+#ggplot(cook.cnty) + geom_sf(aes(fill="White_Perc"))
+```
+
+```{r edaIncome}
+
+hhi.mean <- mean(cook.cnty$Median_HHIncome, na.rm=T)
+z <- quantile(cook.cnty$Median_HHIncome, na.rm=T, names=F)
+
+
+ggplot(cook.cnty, aes(Median_HHIncome, color=I('black'), fill=I('orange'))) + geom_histogram() +
+  geom_vline(xintercept = hhi.mean, color='purple') +
+  geom_text(aes(x=hhi.mean, label=paste("Mean = ", round(hhi.mean)), y=300),  angle=90, vjust = -.5, text=element_text(size=2), hjust=1) +
+  geom_vline(xintercept = z[2], color='red') +
+  geom_text(aes(x=z[2], label=paste("25th Perc = ", z[2]), y=300),  angle=90, vjust = -.5, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = z[4], color='red') +
+  geom_text(aes(x=z[4], label=paste("75th Perc = ", z[4]), y=300),  angle=90, vjust = -.5, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = z[3], color='red') +
+  geom_text(aes(x=z[3], label=paste("Median = ", z[3]), y=300),  angle=90, vjust = -.5, text=element_text(size=2), hjust = 1) + ggtitle("Distribution of Median Household Income")
+
+# create a df where the missing income blocks are removed for easier analysis. This takes ou 8 blocks
+cook.cnty.sub <- cook.cnty[! is.na(cook.cnty$Median_HHIncome), ]
+
+# classify community areas into percentiles by mean hhincome***********************
+
+z <- cook.cnty.sub %>% group_by(community) %>% summarize(avg_mhhi = round(mean(Median_HHIncome)))
+
+cmnty_income_deciles <- quantile(z$avg_mhhi, probs = c(.10, .2, .3, .4, .5, .6, .7, .8, .9), names=F)
+
+z <- z %>% mutate(cmnty_inc_deciles = ifelse(avg_mhhi < cmnty_income_deciles[1], "Perc_10th",
+                                        ifelse(avg_mhhi < cmnty_income_deciles[2], "Perc_20th",
+                                               ifelse(avg_mhhi < cmnty_income_deciles[3], "Perc_30th",
+                                                      ifelse(avg_mhhi < cmnty_income_deciles[4], "Perc_40th",
+                                                             ifelse(avg_mhhi < cmnty_income_deciles[5], "Perc_50th",
+                                                                    ifelse(avg_mhhi < cmnty_income_deciles[6], "Perc_60th",
+                                                                           ifelse(avg_mhhi < cmnty_income_deciles[7], "Perc_70th",
+                                                                                  ifelse(avg_mhhi < cmnty_income_deciles[8], "Perc_80th",
+                                                                                         ifelse(avg_mhhi < cmnty_income_deciles[9], "Perc_90th", "Top"))))))))) )
+
+
+cook.cnty.sub <- cook.cnty.sub %>% left_join( st_set_geometry(z, NULL), by= "community")
+
+#*****************************************
+
+# Classify block grps into income deciles ***********************
+
+bg_income_deciles <- quantile(cook.cnty.sub$Median_HHIncome, probs = c(.10, .2, .3, .4, .5, .6, .7, .8, .9), names=F)
+
+cook.cnty.sub <- cook.cnty.sub %>% mutate(bg_inc_deciles = ifelse(Median_HHIncome < bg_income_deciles[1], "Perc_10th",
+                                        ifelse(Median_HHIncome < bg_income_deciles[2], "Perc_20th",
+                                               ifelse(Median_HHIncome < bg_income_deciles[3], "Perc_30th",
+                                                      ifelse(Median_HHIncome < bg_income_deciles[4], "Perc_40th",
+                                                             ifelse(Median_HHIncome < bg_income_deciles[5], "Perc_50th",
+                                                                    ifelse(Median_HHIncome < bg_income_deciles[6], "Perc_60th",
+                                                                           ifelse(Median_HHIncome < bg_income_deciles[7], "Perc_70th",
+                                                                                  ifelse(Median_HHIncome < bg_income_deciles[8], "Perc_80th",
+                                                                                         ifelse(Median_HHIncome < bg_income_deciles[9], "Perc_90th", "Top"))))))))) ) 
+
+#*********************************
+
+
+#reorder community by mean hhincome
+bymean <- with(cook.cnty.sub, reorder(community, Median_HHIncome, mean))
+
+
+
+#plots**************************
+
+
+# by adding the community colors to this plot, we can see that communities are made of blocks that fall into 
+# different percentiles
+ggplot(cook.cnty.sub, aes(bymean, Median_HHIncome,fill = cook.cnty.sub$cmnty_inc_deciles)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle("Distribution of Median HHIncome Within Community Area") + xlab("Community Area") + theme(legend.position="bottom") + scale_fill_brewer(palette = "RdYlGn")
+
+# without adding the community color, we just see the overall distribution in the community
+ggplot(cook.cnty.sub, aes(bymean, Median_HHIncome )) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle("Distribution of Median HHIncome Within Community Area") + xlab("Community Area")
+
+plot(cook.cnty["Median_HHIncome"])
+
+library(RColorBrewer)
+pal <- brewer.pal(10, "RdYlGn") # we select 10 colors from the palette
+class(pal)
+plot(cook.cnty.sub["cmnty_inc_deciles"],
+     main = "Community Areas Colored by Avg MedianHHIncome Deciles",
+     pal = pal, key.width = lcm(4))
+
+plot(cook.cnty.sub["bg_inc_deciles"],
+     main = "Block Groups Colored by MedianHHIncome Deciles", 
+     pal = pal, key.width = lcm(4))
+
+#legend("bottomleft",  inset = .01, title = "Income Deciles",legend= sort(unique(cook.cnty.sub$bg_inc_deciles))
+ #      ,fill = pal, horiz=F)
+# I feel like the non ggplot version of this tells better info. Because with this, 
+#seems like most of the county is in green. Just need to move the legend over in base plot
+ggplot(cook.cnty.sub) + geom_sf(aes(fill=cmnty_inc_deciles)) + ggtitle("Community Areas by Colored by Income Deciles") + scale_fill_brewer(palette = "RdYlGn")#+ theme(legend.title = element_text("Income Deciles"))
+
+```
+
+```{r edaRace}
+
+pal <- sf.colors(n=10)
+plot(cook.cnty.sub[c("White_Perc", "Black_Perc", "Asian_Perc")], pal = pal, main = "Race Percent in Block Groups")
+legend("top",  inset = .005, title = "Demographic Percent",legend= c(.1,.2,.3,.4,.5,.6,.7,.8,.9,1),
+        fill = pal, horiz=T, cex = .75)
+#cex changes the size of the legend box
+
+white <- quantile(cook.cnty.sub$White_Perc, na.rm=T, names=F)
+
+white.plt <- ggplot(cook.cnty.sub, aes(White_Perc, color=I('black'), fill=I('purple'))) + geom_histogram(binwidth=.01) +
+  geom_vline(xintercept = white[2], color='red') +
+  geom_text(aes(x=white[2], label=paste("25th Perc = ", round(white[2],4)), y=275),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = white[4], color='red') +
+  geom_text(aes(x=white[4], label=paste("75th Perc = ", round(white[4],4)), y=275),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = white[3], color='red') +
+  geom_text(aes(x=white[3], label=paste("Median = ", round(white[3],4)), y=275),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1) #+ ggtitle("Distribution of White Population Percent Per Block Group")
+
+#This indicates that 25% of block groups have less than 5% white population
+
+black <- quantile(cook.cnty.sub$Black_Perc, na.rm=T, names=F)
+
+black.plt <- ggplot(cook.cnty.sub, aes(Black_Perc, color=I('black'), fill=I('green'))) + geom_histogram(binwidth=.01) +
+  geom_vline(xintercept = black[2], color='red') +
+  geom_text(aes(x=black[2], label=paste("25th Perc = ", round(black[2],4)), y=500),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = black[4], color='red') +
+  geom_text(aes(x=black[4], label=paste("75th Perc = ", round(black[4],4)), y=500),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = black[3], color='red') +
+  geom_text(aes(x=black[3], label=paste("Median = ", round(black[3],4)), y=500),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1,) 
+  #ggtitle("Distribution of Black Population Percent Per Block Group")
+
+# This indicates that half of the block groups in Cook County have 10% or less black population, while 25% of block 
+# groups have 89% or more black population. To me, this spells extreme segregation
+
+asian <- quantile(cook.cnty.sub$Asian_Perc, na.rm=T, names=F)
+
+asian.plt <- ggplot(cook.cnty.sub, aes(Asian_Perc, color=I('black'), fill=I('blue'))) + geom_histogram(binwidth=.05) +
+  geom_vline(xintercept = asian[2], color='red') +
+  geom_text(aes(x=asian[2], label=paste("25th Perc = ", round(asian[2],4)), y=1500),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = asian[4], color='red') +
+  geom_text(aes(x=asian[4], label=paste("75th Perc = ", round(asian[4],4)), y=1500),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1) +
+  geom_vline(xintercept = asian[3], color='red') +
+  geom_text(aes(x=asian[3] + .02, label=paste("Median = ", round(asian[3],4)), y=1500),  angle=90, vjust = -.5, size=2, text=element_text(size=2), hjust = 1,)  
+  #ggtitle("Distribution of Asian Population Percent Per Block Group")
+
+grid.arrange(white.plt, black.plt, asian.plt, ncol=1, top="Race Percent Distribution Per Block Group")
+
+```
+
+
+```{r edaPop}
+
+bg_popDen_dec <- quantile(cook.cnty.sub$PopDensity, na.rm=T, names=F, probs = c(.1,.2,.3,.4,.5,.6,.7,.8,.9,1))
+
+
+cook.cnty.sub <- cook.cnty.sub %>% mutate(bg_popDen_deciles = ifelse(PopDensity < bg_popDen_dec[1], "Perc_10th",
+                                        ifelse(PopDensity < bg_popDen_dec[2], "Perc_20th",
+                                               ifelse(PopDensity < bg_popDen_dec[3], "Perc_30th",
+                                                      ifelse(PopDensity < bg_popDen_dec[4], "Perc_40th",
+                                                             ifelse(PopDensity < bg_popDen_dec[5], "Perc_50th",
+                                                                    ifelse(PopDensity < bg_popDen_dec[6], "Perc_60th",
+                                                                           ifelse(PopDensity < bg_popDen_dec[7], "Perc_70th",
+                                                                                  ifelse(PopDensity < bg_popDen_dec[8], "Perc_80th",
+                                                                                         ifelse(PopDensity < bg_popDen_dec[9], "Perc_90th", "Top"))))))))) ) 
+
+ggplot(cook.cnty.sub, aes(PopDensity, color=I('black'), fill=I('gray'))) + geom_histogram(binwidth= .001) +
+  ggtitle("Population Density by Block Group")
+
+
+plot(cook.cnty.sub["bg_popDen_deciles"],
+     main = "Block Groups Colored by Population Density Deciles", 
+     pal = pal, key.width = lcm(4))
+```
+
+
+```{r edaTogether}
+library("PerformanceAnalytics")
+#need to drop the geometry field for this
+my_data <- st_set_geometry(cook.cnty.sub[c("Median_HHIncome","White_Perc", "Black_Perc", "PopDensity")], NULL )
+chart.Correlation(my_data, histogram=TRUE, pch=19)
+
+```
+
+Do white neighborhoods have more diversity in income than black neighborhoods ? Below we will sort CA's by race population percent and see how the boxplot ranges look at the top of the pop percent spectrum for white and black.
+```{r question}
+# Do white neighborhoods have more diversity in income than black neighborhoods ? 
+
+#reorder community by mean hhincome
+bymean1 <- with(cook.cnty.sub, reorder(community, White_Perc, mean))
+
+
+# without adding the community color, we just see the overall distribution in the community
+ggplot(cook.cnty.sub, aes(bymean1, Median_HHIncome )) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle("Distribution Median HHIncome Within CA Sorted by White Pop Perc") + xlab("Community Area")
+
+
+#reorder community by mean hhincome
+bymean2 <- with(cook.cnty.sub, reorder(community, Black_Perc, mean))
+
+
+# without adding the community color, we just see the overall distribution in the community
+ggplot(cook.cnty.sub, aes(bymean2, Median_HHIncome )) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle("Distribution Median HHIncome Within CA Sorted by Black Pop Perc") + xlab("Community Area")
+
+
+
+
+```
+
+
+
+
+

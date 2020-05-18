@@ -1,0 +1,9 @@
+{
+    "path" : "~/Documents/Data_Science_Projects/Exploring_Chicago_Neighborhoods",
+    "sortOrder" : [
+        {
+            "ascending" : true,
+            "columnIndex" : 2
+        }
+    ]
+}

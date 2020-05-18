@@ -1,0 +1,8 @@
+"0",""
+"0","comm_points <- st_centroid(comm_boundary2)"
+"0","comm_points <- cbind(comm_boundary2, st_coordinates(st_centroid(comm_boundary2$geometry)))"
+"0",""
+"0","ggplot(comm_boundary2) + "
+"0","  geom_sf(aes(fill=community)) + theme(legend.position = ""none"") +"
+"0","  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),"
+"0","    color = ""darkblue"", check_overlap = F, size=1.5) + ggtitle(""Chicago Community Areas"") + xlab("""") + ylab("""")"

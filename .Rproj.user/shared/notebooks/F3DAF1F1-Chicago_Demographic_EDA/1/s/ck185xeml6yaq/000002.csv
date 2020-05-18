@@ -1,0 +1,5 @@
+"0","library(""PerformanceAnalytics"")"
+"0","#need to drop the geometry field for this"
+"0","my_data <- st_set_geometry(cook.cnty.sub[c(""Median_HHIncome"",""White_Perc"", ""Black_Perc"", ""PopDensity"")], NULL )"
+"0","chart.Correlation(my_data, histogram=TRUE, pch=19)"
+"0",""

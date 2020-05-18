@@ -1,0 +1,4 @@
+"0",""
+"0","plot(cook.cnty.sub[""bg_inc_deciles""],"
+"0","     main = ""Block Groups Colored by MedianHHIncome Deciles"", "
+"0","     pal = pal, key.width = lcm(4))"

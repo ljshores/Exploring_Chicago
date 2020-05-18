@@ -1,0 +1,4 @@
+"0","ggplot() + "
+"0","  geom_sf(data = comm_boundary, size = 3, color = ""black"", fill = ""cyan1"") + "
+"0","  ggtitle(""Chicago Community Areas"") + "
+"0","  coord_sf()"

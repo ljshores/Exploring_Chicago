@@ -1,0 +1,4 @@
+"0",""
+"0","# without adding the community color, we just see the overall distribution in the community"
+"0","ggplot(cook.cnty.sub, aes(bymean, Median_HHIncome )) + geom_boxplot() +"
+"0","  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle(""Distribution of Median HHIncome Within Community Area"") + xlab(""Community Area"")"
