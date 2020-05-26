@@ -1,0 +1,567 @@
+---
+title: "Chicago_Demographic_EDA_Pt2"
+author: "Lauren Shores"
+date: "5/21/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE)
+#, message=FALSE
+```
+
+```{r packages}
+#library(sf)
+library(ggplot2)
+library(gridExtra)
+library(magrittr)
+library(dplyr)
+library(caret)
+library(sf)
+library(tidyr)
+#library(rgdal)
+#library(shapefiles)
+#library(raster)
+```
+
+## Intro
+
+This is part two where we  will be exploring crime data, business licenses, and maybe public transportation.
+
+In part three we will put them all together and perhaps try to group similar blocks...
+
+Or maybe part three will be the tool (or maybe that needs to be its own separate post)
+```{r getdata}
+#crime data for the past year, pulled on the date of the file  #https://data.cityofchicago.org/Public-Safety/Crimes-Map/dfnk-7re6
+crime_raw <- read.csv("Data/cityofchicagoorg_Crimes_20200513.csv", stringsAsFactors = F)
+
+# check for missing geo data
+nrow(crime_raw[is.na(crime_raw$LATITUDE),])
+
+message('The proportion of crime data that does not have lat/long:')
+  print(nrow(crime_raw[is.na(crime_raw$LATITUDE),])/nrow(crime_raw))
+
+
+```
+
+## Crime
+
+```{r formatdatmaps}
+
+# get rid of rows with no spatial data
+crime <- crime_raw[! is.na(crime_raw$LATITUDE),]
+
+#turn data frame into a spatial object
+crime <- st_as_sf(crime, coords = c("LONGITUDE", "LATITUDE")) 
+
+st_crs(crime) # doesn't have a crs, so need to assign one (the same as the cook_sf)
+st_crs(cook_sf)
+
+st_crs(crime) <- 4269
+crime <- st_transform(crime, st_crs(cook_sf))
+crime_sf <- cook_sf %>%  st_join(crime) 
+  #group_by(GEOID10) %>% 
+   #   summarize(n_homic = n(),
+    #            tract_area = unique(tract_area),
+     #           homic_rate = n_homic/tract_area * 1e6)
+
+# get rid of geometry column so can do non-map computations quicker
+crime_df <- st_set_geometry(crime_sf, NULL )
+
+```
+
+```{r quickview}
+unique(crime_sf$PRIMARY.DESCRIPTION)
+
+crime_df %>% group_by(community) %>% summarize(crime_cnt = n()) %>% ggplot(.,aes(reorder(community, crime_cnt), crime_cnt, color=I('black'), fill=I('red'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("Crime Counts in Chicago Community Areas in the Past Year") + ylab("Community Area") + xlab("Number of Crimes")
+
+assault_plt <- crime_df %>% group_by(community, PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) %>%
+  filter(PRIMARY.DESCRIPTION == "ASSAULT", crime_cnt > 0) %>% ggplot(.,aes(reorder(community, crime_cnt), crime_cnt, color=I('black'), fill=I('orange'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("ASSAULT Counts in the Past Year") + ylab("Community Area") + xlab("Number of Crimes")
+
+homicide_plt <- crime_df %>% group_by(community, PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) %>%
+  filter(PRIMARY.DESCRIPTION == "HOMICIDE", crime_cnt > 0) %>% ggplot(.,aes(reorder(community, crime_cnt), crime_cnt, color=I('black'), fill=I('orange'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("HOMICIDE Counts in the Past Year") + ylab("Community Area") + xlab("Number of Crimes")
+
+theft_plt <- crime_df %>% group_by(community, PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) %>%
+  filter(PRIMARY.DESCRIPTION == "THEFT", crime_cnt > 0) %>% ggplot(.,aes(reorder(community, crime_cnt), crime_cnt, color=I('black'), fill=I('orange'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("THEFT Counts in the Past Year") + ylab("Community Area") + xlab("Number of Crimes")
+
+grid.arrange(assault_plt, homicide_plt, theft_plt, ncol=3)
+
+crime_df %>% group_by(PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) %>% ggplot(.,aes(reorder(PRIMARY.DESCRIPTION, crime_cnt), crime_cnt, color=I('black'), fill=I('blue'))) + geom_bar(stat = "identity")  + #coord_flip() +
+  theme(axis.text.x = element_text( angle=90, hjust = 1, size=7)) + ggtitle("Crime Counts by Type") + xlab("Crime Type") + ylab("Number of Crimes")
+
+#Maybe want to get rid of the bottom n communities in the grid plot to free up space. Or just print them
+#separately so that they all fit
+
+crime_df %>% group_by(PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) %>% mutate(type_perc = round(crime_cnt/sum(crime_cnt), 3)) %>% View()
+  
+```
+
+```{r crimeTypes}
+by_comm_crime <- crime_df %>% filter(PRIMARY.DESCRIPTION %in% c("THEFT", "ASSAULT", "BATTERY", "BURGLARY", "ROBBERY", "HOMICIDE", "CRIM SEXUAL ASSAULT")) %>% group_by(community, PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) %>% spread(., PRIMARY.DESCRIPTION, crime_cnt) %>% ungroup() %>% mutate(community = as.character(community))
+
+by_comm_crime[is.na(by_comm_crime)] <- 0
+
+theft <- by_comm_crime %>% filter(THEFT > 0) %>% ggplot(.,aes(reorder(community, THEFT), THEFT, color=I('black'), fill=I('orange'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("Theft Counts") + ylab("Crime Count") + xlab("Community")
+
+burg <- by_comm_crime %>% filter(BURGLARY > 0) %>% ggplot(.,aes(reorder(community, BURGLARY), BURGLARY, color=I('black'), fill=I('orange'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("Burglary Counts") + ylab("Crime Count") + xlab("Community")
+
+sex <- by_comm_crime %>% filter(`CRIM SEXUAL ASSAULT` > 0) %>% ggplot(.,aes(reorder(community, `CRIM SEXUAL ASSAULT`), `CRIM SEXUAL ASSAULT`, color=I('black'), fill=I('purple'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("Criminal Sexual Assault Counts") + ylab("Crime Count") + xlab("Community")
+
+hom <- by_comm_crime %>% filter(HOMICIDE > 0) %>% ggplot(.,aes(reorder(community, HOMICIDE), HOMICIDE, color=I('black'), fill=I('purple'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("Homicide Counts") + ylab("Crime Count") + xlab("Community")
+
+
+batt <- by_comm_crime %>% filter(BATTERY > 0) %>% ggplot(.,aes(reorder(community, BATTERY), BATTERY, color=I('black'), fill=I('blue'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("Battery Counts") + ylab("Crime Count") + xlab("Community")
+
+assault <- by_comm_crime %>% filter(ASSAULT > 0) %>% ggplot(.,aes(reorder(community, ASSAULT), ASSAULT, color=I('black'), fill=I('blue'))) + geom_bar(stat = "identity")  + coord_flip() +
+  theme(axis.text.y = element_text( hjust = 1, size=4)) + ggtitle("Assault Counts") + ylab("Crime Count") + xlab("Community")
+
+theft
+burg
+sex 
+hom
+batt
+assault
+
+grid.arrange(theft, burg, ncol=2)
+grid.arrange(sex, hom, ncol=2)
+grid.arrange(batt, assault,ncol=2)
+
+```
+
+
+
+I will break crime down into fewer categories and show what % of the crimes happen in each community area,
+and then block level. 
+
+combine 
+assault and battery
+theft
+burglary & robbery
+homicide & crim sexual assault (not sure if want to combine)
+
+```{r crimemaps}
+#all crimes
+
+comm_allcrime_perc <- crime_sf %>% group_by(community) %>% summarize(comm_crime_cnt = n()) %>% ungroup() %>% mutate(crime_perc =comm_crime_cnt/sum(comm_crime_cnt))
+
+#plot(comm_allcrime_perc["crime_perc"], main= "Percent of All Crimes by Community Area")
+
+#the comm_points come from some code from previous file
+ggplot(comm_allcrime_perc) + 
+  geom_sf(aes(fill=crime_perc)) + 
+  #scale_fill_gradient2(low = "yellow", high = "red", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "white", check_overlap = F, size=1.5) + ggtitle("Percent of all Crimes by Community Areas") + xlab("") + ylab("")
+
+comm_homSex_perc <- crime_sf %>% filter(PRIMARY.DESCRIPTION %in% c("HOMICIDE", "CRIM SEXUAL ASSAULT") ) %>% group_by(community) %>% summarize(comm_crime_cnt = n()) %>% ungroup() %>% mutate(crime_perc =comm_crime_cnt/sum(comm_crime_cnt))
+
+#plot(comm_homSex_perc["crime_perc"], main= "Percent of Homicides & Sexual Assault by Community Area")
+ggplot(comm_homSex_perc) + 
+  geom_sf(aes(fill=crime_perc)) + 
+  scale_fill_gradient2() + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Percent of Homicides & Sexual Assault by Community Areas") + xlab("") + ylab("")
+
+comm_burgRob_perc <- crime_sf %>% filter(PRIMARY.DESCRIPTION %in% c("BURGLARY", "ROBBERY") ) %>% group_by(community) %>% summarize(comm_crime_cnt = n()) %>% ungroup() %>% mutate(crime_perc =comm_crime_cnt/sum(comm_crime_cnt))
+
+#plot(comm_burgRob_perc["crime_perc"], main= "Percent of Burglary & Robberies by Community Area")
+ggplot(comm_burgRob_perc) + 
+  geom_sf(aes(fill=crime_perc)) + 
+  scale_fill_gradient2(low = "yellow", high = "red", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Percent of Burglary & Robberies by Community Areas") + xlab("") + ylab("")
+
+
+comm_assltBatt_perc <- crime_sf %>% filter(PRIMARY.DESCRIPTION %in% c("ASSAULT", "BATTERY") ) %>% group_by(community) %>% summarize(comm_crime_cnt = n()) %>% ungroup() %>% mutate(crime_perc =comm_crime_cnt/sum(comm_crime_cnt))
+
+#plot(comm_assltBatt_perc["crime_perc"], main= "Percent of Assaults & Batteries by Community Area")
+ggplot(comm_assltBatt_perc) + 
+  geom_sf(aes(fill=crime_perc)) + 
+  scale_fill_gradient2(low = "yellow", high = "green", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Percent of Assaults & Batteries by Community Areas") + xlab("") + ylab("")
+
+
+
+
+comm_theft_perc <- crime_sf %>% filter(PRIMARY.DESCRIPTION %in% c("THEFT") ) %>% group_by(community) %>% summarize(comm_crime_cnt = n()) %>% ungroup() %>% mutate(crime_perc =comm_crime_cnt/sum(comm_crime_cnt))
+
+#plot(comm_theft_perc["crime_perc"], main= "Percent of Thefts by Community Area")
+ggplot(comm_theft_perc) + 
+  geom_sf(aes(fill=crime_perc)) + 
+  scale_fill_gradient2(low = "yellow", high = "orange", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Percent of Thefts by Community Areas") + xlab("") + ylab("")
+
+
+```
+
+
+
+
+```{r mapquickview}
+
+#THIS SECTION WILL ALLOW TO MAP AT BLOCK GROUP LEVEL, BUT HONESTLY IT'S GOING TO BE EASIER FOR USERS TO CONSUME THIS AT THE COMMUNITY AREA. SAVE THE GRANULARITY FOR WHEN WE GO INTO OUR GROUP EXERCISES
+
+z <- crime_sf %>% group_by(GEOID, PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) 
+plot(z[z$PRIMARY.DESCRIPTION == "THEFT", "crime_cnt"], breaks = "quantile", nbreaks = 7)
+
+comm_sf = crime_sf[c("geometry", "community", "PRIMARY.DESCRIPTION")] %>% filter(PRIMARY.DESCRIPTION %in% c("THEFT", "ASSAULT", "BATTERY", "BURGLARY", "ROBBERY", "HOMICIDE", "CRIM SEXUAL ASSAULT")) %>% 
+  group_by(community, PRIMARY.DESCRIPTION) %>% summarize(crime_cnt = n()) %>% spread(., PRIMARY.DESCRIPTION, crime_cnt, -geometry)
+comm_sf %>% View()
+
+
+# this gives the maps at the block group level
+#COMBINE THE TWO PLOTS SO CAN STILL SEE THE OUTLINE OF AREAS THAT DON'T HAVE Data for this category
+pal <- brewer.pal(5, "RdYlGn") # we select 10 colors from the palette
+plot(st_geometry(crime_sf), main="Sexual Assault Count by Block Group")
+plot(comm_sf[comm_sf$PRIMARY.DESCRIPTION == "CRIM SEXUAL ASSAULT","crime_cnt"], add= TRUE, pal=pal)
+legend("right",  inset = .005, legend = quantile(comm_sf$crime_cnt, names = F) , fill= pal, title="Crime Counts")
+
+
+
+
+```
+
+We have a good idea of where the different types of crimes take place. One last thing we could do with the crime data is look at crimes over time. Are there some seasonal patterns? But this will be irrelevant
+to our overall analysis for buying, since you'd be living there at every time of the year.
+
+Could also do a boxplot, community is x axis, the points are the counts per block group, so you can see if there are particular block groups that carry the burden of crimes, or are they concentrated in a few block groups
+
+## Business Licenses
+
+Next let's look at our business license data.
+
+```{r biz_lic}
+
+bizl_raw <- read.csv("Data/Business_Licenses_20200513.csv", stringsAsFactors = F)
+
+# check for missing geo data
+nrow(bizl_raw[is.na(bizl_raw$LATITUDE),])
+
+message('The proportion of crime data that does not have lat/long:')
+  print(nrow(bizl_raw[is.na(bizl_raw$LATITUDE),])/nrow(bizl_raw))
+
+
+```
+
+```{r bringInSpatial}
+
+# get rid of rows with no spatial data
+biz <- bizl_raw[! is.na(bizl_raw$LATITUDE),]
+
+biz <- biz[c("LICENSE.ID", "LEGAL.NAME", "WARD","LICENSE.CODE", "LICENSE.DESCRIPTION","BUSINESS.ACTIVITY.ID",
+      "BUSINESS.ACTIVITY", "APPLICATION.TYPE", "LICENSE.TERM.START.DATE", "LATITUDE", "LONGITUDE",
+      "LOCATION")]
+
+biz <- biz %>% mutate(mylicense_grps = ifelse(LICENSE.DESCRIPTION == "Retail Food Establishment", "retail_food",
+                        ifelse(LICENSE.DESCRIPTION == "Wholesale Food Establishment", "wholesale_food",
+                               ifelse(LICENSE.DESCRIPTION == "Pawnbroker", "pawnbroker",
+                                      ifelse(LICENSE.DESCRIPTION %in% c("Public Place of Amusement", "Late Hour", "Tavern", "Music and Dance", "Wrigley Field", "Navy Pier Kiosk License"), "entertainment_bar",
+                                             ifelse(LICENSE.DESCRIPTION == "Filling Station", "filling_station",
+                                                    ifelse(LICENSE.DESCRIPTION %in% c("Food - Shared Kitchen", "Food - Shared Kitchen - Supplemental", "Special Event Food", "Mobile Food License"),
+                                                           "other_food",
+                                                           "other")))))) )
+
+#turn data frame into a spatial object
+biz <- st_as_sf(biz, coords = c("LONGITUDE", "LATITUDE")) 
+
+st_crs(biz) # doesn't have a crs, so need to assign one (the same as the cook_sf)
+st_crs(cook_sf)
+
+st_crs(biz) <- 4269
+biz <- st_transform(biz, st_crs(cook_sf))
+biz_sf <- cook_sf %>%  st_join(biz) 
+  #group_by(GEOID10) %>% 
+   #   summarize(n_homic = n(),
+    #            tract_area = unique(tract_area),
+     #           homic_rate = n_homic/tract_area * 1e6)
+
+# get rid of geometry column so can do non-map computations quicker
+biz_df <- st_set_geometry(biz_sf, NULL )
+```
+
+
+```{r bizEDA}
+
+length(unique(biz$BUSINESS.ACTIVITY))
+length(unique(biz$LICENSE.DESCRIPTION))
+
+
+# Which neighborhoods have a lot of legitimate business
+biz_df %>% group_by(community) %>% summarize(biz_cnt = n()) %>% ggplot(., aes(reorder(community,biz_cnt), biz_cnt, fill=I("pink"), color=I('black')) ) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle("Number of Business Licenses by Community") + ylab("count") + xlab("community")
+
+# Which neighborhoods have a legitimate business in the groups I defined
+biz_df %>% filter(mylicense_grps != "other") %>% group_by(community) %>% summarize(biz_cnt = n()) %>% ggplot(., aes(reorder(community,biz_cnt), biz_cnt, fill=I("pink"), color=I('black')) ) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle("Number of Business Licenses by Community") + ylab("count") + xlab("community")
+
+biz_df %>% filter(mylicense_grps != "other") %>% group_by(community, mylicense_grps) %>% summarize(biz_cnt = n()) %>% ggplot(., aes(reorder(community,biz_cnt), biz_cnt, fill=mylicense_grps, color=I('black')) ) + geom_bar(position="stack", stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) + ggtitle("Number of Business Licenses by Community") + ylab("count") + xlab("community")
+
+
+
+# What types of business 
+biz_df %>% filter(mylicense_grps != "other") %>% group_by(community, mylicense_grps) %>% summarize(biz_cnt = n()) %>% ggplot(., aes(reorder(community,biz_cnt), biz_cnt, fill=mylicense_grps, color=I('black')) ) + geom_bar(position= "stack", stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6), legend.title=element_text("License Groups")) + ggtitle("Number of Business Licenses by Community") + ylab("count") + xlab("community") + guides(size = guide_legend(order = 3) )
+
+
+```
+
+```{r bizMap}
+
+# Need to do overlays to make these maps whole.
+
+ent_bar_perc <- biz_sf %>% filter(mylicense_grps == "entertainment_bar")  %>% group_by(community) %>% summarize(comm_biz_cnt = n()) %>% ungroup() %>% mutate(biz_perc =comm_biz_cnt/sum(comm_biz_cnt))
+
+#plot(comm_assltBatt_perc["crime_perc"], main= "Percent of Assaults & Batteries by Community Area")
+ggplot(ent_bar_perc) + 
+  geom_sf(aes(fill=biz_perc)) + 
+  scale_fill_gradient2(low = "yellow", high = "green", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Percent of Entertainment Businesses by Community Areas") + xlab("") + ylab("")
+
+
+
+retail_perc <- biz_sf %>% filter(mylicense_grps== "retail_food")  %>% group_by(community) %>% summarize(comm_biz_cnt = n()) %>% ungroup() %>% mutate(biz_perc =comm_biz_cnt/sum(comm_biz_cnt))
+
+#plot(comm_assltBatt_perc["crime_perc"], main= "Percent of Assaults & Batteries by Community Area")
+ggplot(retail_perc) + 
+  geom_sf(aes(fill=biz_perc)) + 
+  scale_fill_gradient2(low = "yellow", high = "purple", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Percent of Retail Food Businesses by Community Areas") + xlab("") + ylab("")
+
+
+
+```
+
+## Putting it All Together
+
+
+It would be nice to get a ratio of business count to population.
+Also, it would be nice to just pull all these variables together to get some real comparative analysis.
+
+```{r setupBlkGrpLvl}
+
+bg_biz_sf <- biz_sf %>% group_by(GEOID,community,ALAND,mylicense_grps) %>% summarize(biz_cnts = n()) %>%
+  spread(., mylicense_grps, biz_cnts)
+
+bg_biz_sf$`<NA>` <- NULL
+bg_biz_sf[is.na(bg_biz_sf)] <- 0
+
+
+bg_crime_sf <- crime_sf %>% filter(PRIMARY.DESCRIPTION %in% c("THEFT", "ASSAULT", "BATTERY", "BURGLARY", "ROBBERY", "HOMICIDE", "CRIM SEXUAL ASSAULT","NARCOTICS") ) %>% group_by(GEOID, PRIMARY.DESCRIPTION) %>% summarize(crime_cnts = n()) %>%
+  spread(., PRIMARY.DESCRIPTION, crime_cnts)
+
+bg_crime_sf[is.na(bg_crime_sf)] <- 0
+
+
+bg_crime_sf <- st_set_geometry(bg_crime_sf, NULL )
+
+bg_big_sf <- left_join(bg_biz_sf, bg_crime_sf, by="GEOID") %>% 
+  left_join(st_set_geometry(cook.cnty.sub[c("GEOID", "Median_HHIncome", "TotalPopulation", "White_Perc", "Black_Perc", "Asian_Perc", "Median_HHIncome_Perc","TotalPop_Perc","PopDensity")], NULL), by = "GEOID")
+
+```
+
+
+
+
+## CTA L Data
+
+This CTA dataset has all the L stops in the city. It may have duplicates for actual stations because a stop id is tied to the direction of the station (eg Northbound vs Southbound at 51st Station). 
+But Map ID seems to be the unique actual physical placement of the station.
+For our purposes, it will make sense to only consider unique Map IDs.
+
+
+```{r CTAdat}
+
+cta_L <- read.csv("Data/CTA_-_System_Information_-_List_of__L__Stops.csv", stringsAsFactors = F)
+
+cta_L <- cta_L[!duplicated(cta_L[,c('MAP_ID')]),] %>% select(-STOP_ID, -DIRECTION_ID, -STOP_NAME)
+
+#split the location column into lat/long columns and format
+cta_L <- cta_L %>% separate(Location, c( "LATITUDE", "LONGITUDE"), ", ") %>% 
+  mutate(LATITUDE = as.numeric(substr(LATITUDE,2,nchar(LATITUDE))), 
+         LONGITUDE = as.numeric(substr(LONGITUDE,1, nchar(LATITUDE) - 1)),
+         cnt = 1) 
+
+#turn data frame into a spatial object
+cta <- st_as_sf(cta_L, coords = c("LONGITUDE", "LATITUDE")) 
+
+st_crs(cta) # doesn't have a crs, so need to assign one (the same as the cook_sf)
+st_crs(cook_sf)
+
+st_crs(cta) <- 4269
+cta <- st_transform(cta, st_crs(cook_sf))
+cta_sf <- cook_sf %>%  st_join(cta) %>%
+  group_by(GEOID) %>% 
+   summarize(L_station_cnt = sum(cnt, na.rm=T) )
+
+plot(cta_sf["L_station_cnt"])
+```
+
+
+Does having an L station in your neighborhood imply anything about demographics or businesses?
+It would be nice to see how many L's are in an area per square ft. Looks like northside has more closely spaced stations.
+
+
+```{r ctaEDA}
+cta_sf1 <- st_set_geometry(cta_sf, NULL )
+
+bg_big_sf <- left_join(bg_big_sf, cta_sf1, by="GEOID")
+
+
+# I want to know if white areas are better served than black areas with the cta. I think this is saying something,
+# but not close enough to what I really want
+bg_big_sf %>% filter(L_station_cnt > 0) %>% ggplot(., aes(Median_HHIncome_Perc, Black_Perc)) + geom_point()
+
+bg_big_sf %>% ggplot(., aes(L_station_cnt, PopDensity)) + geom_point()
+
+bg_big_sf %>% ggplot(., aes(L_station_cnt, HOMICIDE)) + geom_point()
+
+```
+
+
+## All the main data points in one
+
+```{r comps}
+
+ggplot(bg_big_sf, aes(TotalPopulation, retail_food)) + geom_point() + xlim(c(0,5000)) + ylim(c(0,150))
+
+big_dat <- bg_big_sf %>% st_set_geometry(., NULL) %>% ungroup() %>% select(entertainment_bar, retail_food, HOMICIDE, ASSAULT, THEFT, Median_HHIncome, White_Perc, Black_Perc, PopDensity)
+big_dat <- big_dat[! is.na(big_dat$Median_HHIncome),]
+
+chart.Correlation(big_dat, histogram=TRUE, pch=19)
+
+# get rid of extremen outliers for some variables
+big_dat2 <- big_dat[(big_dat$retail_food != max(big_dat$retail_food)) ,] 
+big_dat2 <- big_dat2[(big_dat2$retail_food != max(big_dat2$retail_food)) ,] 
+
+big_dat2 <-  big_dat2[big_dat2$entertainment_bar != max(big_dat2$entertainment_bar),]
+
+big_dat2 <-  big_dat2[big_dat2$THEFT != max(big_dat2$THEFT, na.rm=T),]
+
+samp <- big_dat2[sample(nrow(big_dat2), round(nrow(big_dat2)*.6)), ]
+chart.Correlation(samp, histogram=TRUE, pch=19)
+#mayb3 identify and remove the outliers
+```
+
+
+
+```{r crimebox}
+
+ggplot(bg_big_sf, aes(reorder(community, HOMICIDE), HOMICIDE)) + geom_boxplot() +theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6))
+
+ggplot(bg_big_sf, aes(reorder(community, ASSAULT), ASSAULT)) + geom_boxplot() +theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6))
+
+ggplot(bg_big_sf, aes(reorder(community, BURGLARY), BURGLARY)) + geom_boxplot() +theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6))
+
+ggplot(bg_big_sf, aes(reorder(community, NARCOTICS), NARCOTICS)) + geom_boxplot() +theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6))
+```
+
+It looks like the west and north sides are better served with L stations than the south. Although when you look L counts at the block group level, most just have one stop, when you consider the block groups in a community area you see that the aforementioned communities are better served.
+```{r commCTA}
+
+z <- bg_big_sf %>% group_by(community) %>% summarize(L_station_cnt = sum(L_station_cnt), mean(White_Perc), mean(Black_Perc), mean(Median_HHIncome), Entertainment_Bar = sum(entertainment_bar), Retail_Food = sum(retail_food), THEFT = sum(THEFT,na.rm=T), HOMICIDE = sum(HOMICIDE,na.rm=T),
+                                                     ASSAULT = sum(ASSAULT,na.rm=T))
+
+
+plot(z["L_station_cnt"]) 
+# make this aggplot so it's a bit prettier
+ggplot(z) + 
+  geom_sf(aes(fill=L_station_cnt)) + 
+  scale_fill_gradient(low = "navy blue", high = "orange", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "white", check_overlap = F, size=1.5) + ggtitle("Number of L Train Stations by Community Areas") + xlab("") + ylab("")
+#plot(z["sum(entertainment_bar)"]) # make this aggplot so it's a bit prettier
+
+
+
+ggplot(z) + 
+  geom_sf(aes(fill=Entertainment_Bar)) + 
+  scale_fill_gradient2(low = "yellow", high = "purple", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Entertainment/Bar Businesses by Community Areas") + xlab("") + ylab("")
+
+ggplot(z) + 
+  geom_sf(aes(fill=Retail_Food)) + 
+  scale_fill_gradient2(low = "yellow", high = "red", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Retail Food Businesses by Community Areas") + xlab("") + ylab("")
+
+ggplot(z) + 
+  geom_sf(aes(fill=THEFT)) + 
+  scale_fill_gradient2(low = "yellow", high = "green", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Thefts by Community Areas") + xlab("") + ylab("")
+
+ggplot(z) + 
+  geom_sf(aes(fill=HOMICIDE)) + 
+  scale_fill_gradient2(low = "yellow", high = "red", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Homicides by Community Areas") + xlab("") + ylab("")
+
+ggplot(z) + 
+  geom_sf(aes(fill=ASSAULT)) + 
+  scale_fill_gradient2(low = "yellow", high = "purple", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Assaults by Community Areas") + xlab("") + ylab("")
+
+
+# it might be better to represent all these types of plot as percentages
+
+```
+
+
+
+```{r crime4}
+
+ggplot(z) + 
+  geom_sf(aes(fill=THEFT)) + 
+  scale_fill_gradient2(low = "yellow", high = "red", na.value = NA) + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Retail Food Businesses by Community Areas") + xlab("") + ylab("")
+
+
+comm_clean_sf <- bg_big_sf %>% group_by(community) %>% summarize(L_station_cnt = sum(L_station_cnt ), avg_white_perc = mean(White_Perc ), avg_black_perc = mean(Black_Perc ), avg_med_hhincome = mean(Median_HHIncome), entertainment_bar = sum(entertainment_bar), retail_food= sum(retail_food), THEFT = sum(THEFT), ROBBERY = sum(ROBBERY), BURGLARY = sum(BURGLARY), ASSAULT = sum(ASSAULT), BATTERY = sum(BATTERY), HOMICIDE = sum(HOMICIDE), CRIM_SEXUAL_ASSAULT = sum(`CRIM SEXUAL ASSAULT`)) %>%
+  mutate(rob = (THEFT + ROBBERY + BURGLARY) , 
+         violent = (ASSAULT + BATTERY), 
+         ult_bad = (HOMICIDE + CRIM_SEXUAL_ASSAULT))
+
+comm_clean_sf[is.na(comm_clean_sf)] <- 0
+comm_clean_sf <- comm_clean_sf %>% mutate(rob_perc = rob/sum(rob),
+         violent_perc = violent/sum(violent),
+         ult_bad_perc = ult_bad/sum(ult_bad))
+
+ggplot(comm_clean_sf) + 
+  geom_sf(aes(fill=THEFT)) + 
+  scale_fill_gradient2() + 
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),color = "black", check_overlap = F, size=1.5) + 
+  ggtitle("Thefts, Burglaries & Robberies by Community Areas") + xlab("") + ylab("") + 
+  theme(legend.title = element_text("Percent of Robberies"))
+
+
+
+
+
+ggplot(comm_clean_sf) + 
+  geom_sf(aes(fill=violent_perc)) + 
+  scale_fill_gradient2(low = "yellow", high = "red", na.value = NA) +
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Assaults & Battery by Community Areas") + xlab("") + ylab("") + theme(legend.title = element_text("Percent of Assaults"))
+
+ggplot(comm_clean_sf) + 
+  geom_sf(aes(fill=ult_bad_perc)) + 
+  scale_fill_gradient2(low = "yellow", high = "red", na.value = NA) +
+  geom_text(data= comm_points ,aes(x=X, y=Y, label=community),
+    color = "black", check_overlap = F, size=1.5) + ggtitle("Homicides & Sexual Assaults by Community Areas") + xlab("") + ylab("") + theme(legend.title = element_text("Percent of Assaults"))
+
+
+```
+

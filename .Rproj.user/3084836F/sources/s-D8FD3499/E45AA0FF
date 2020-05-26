@@ -1,0 +1,27 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1590104863371.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "2571652762",
+    "id" : "E45AA0FF",
+    "lastKnownWriteTime" : 1590424407,
+    "last_content_update" : 1590424407554,
+    "path" : "~/Documents/Data_Science_Projects/Exploring_Chicago_Neighborhoods/Chicago_Demographic_EDA_Pt2.Rmd",
+    "project_path" : "Chicago_Demographic_EDA_Pt2.Rmd",
+    "properties" : {
+        "cursorPosition" : "430,34",
+        "last_setup_crc32" : "D8FD349938aa3cbd",
+        "scrollLine" : "428",
+        "tempName" : "Untitled1"
+    },
+    "read_only" : false,
+    "read_only_alternatives" : [
+    ],
+    "relative_order" : 4,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_markdown"
+}

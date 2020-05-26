@@ -1,0 +1,4 @@
+"0","crime_sf <- cook_sf %>%  st_join(crime)
+"
+"2","although coordinates are longitude/latitude, st_intersects assumes that they are planar
+"

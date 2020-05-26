@@ -1,0 +1,8 @@
+"0","cta_sf1 <- st_set_geometry(cta_sf, NULL )"
+"0",""
+"0","bg_big_sf <- left_join(bg_big_sf, cta_sf1, by=""GEOID"")"
+"0",""
+"0",""
+"0","# I want to know if white areas are better served than black areas with the cta. I think this is saying something,"
+"0","# but not close enough to what I really want"
+"0","bg_big_sf %>% filter(L_station_cnt > 0) %>% ggplot(., aes(Median_HHIncome_Perc, Black_Perc)) + geom_point()"
